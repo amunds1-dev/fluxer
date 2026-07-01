@@ -1,0 +1,11 @@
+# Internal-only. This Caddy instance publishes no ports and is never reached
+# by Traefik or the outside world - it exists purely so app-proxy's discovery
+# call to `caddy:8088` looks like it passed through a proxy hop, the same way
+# it would in upstream's stack. The public site block from upstream's
+# Caddyfile is intentionally omitted since Traefik on LXC 105 owns that now.
+
+:8088 {
+	handle_path /api/* {
+		reverse_proxy api:8080
+	}
+}
