@@ -5,11 +5,16 @@ name: fluxer
 # (LXC 105 / 10.42.1.105). This stack runs on LXC 114 / 10.42.1.114.
 #
 # Differences from upstream deploy/self-hosting/docker-compose.yml:
-#   - `caddy` service removed entirely (Traefik does TLS + routing instead)
-#   - Every service Caddy used to front now publishes its port on the host
-#     (bound to FLUXER_HOST_IP) so Traefik can reach it over the LAN
-#   - `app-proxy` no longer depends on caddy; its discovery upstream now
-#     hits the `api` service directly over the internal docker network
+#   - `caddy` no longer terminates public TLS/routing - Traefik on LXC 105
+#     does that instead. Every service the public Caddyfile used to front
+#     now publishes its port on the host (bound to FLUXER_HOST_IP) so
+#     Traefik can reach it over the LAN.
+#   - `caddy` itself is kept, but demoted to an internal-only sidecar
+#     (no ports published) that just serves the `:8088` discovery hop
+#     app-proxy depends on - see caddy-internal.Caddyfile. `api` rejects
+#     that discovery call with 403 when hit directly container-to-container
+#     (it expects the request to look like it came through the proxy chain),
+#     so this hop can't just be deleted.
 #   - `livekit` additionally publishes its HTTP signaling port (7880)
 #
 # Keep this in sync with upstream by diffing against:
@@ -110,6 +115,17 @@ x-fluxer-service: &fluxer-service
   networks: [fluxer]
 
 services:
+  # Internal-only sidecar: no ports published, not touched by Traefik. Its
+  # sole job is serving the `:8088` discovery hop that `app-proxy` calls -
+  # api 403s that request when it arrives directly container-to-container.
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    networks: [fluxer]
+    volumes:
+      - ./caddy-internal.Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [api]
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -292,15 +308,14 @@ services:
     environment:
       FLUXER_APP_PROXY_HOST: 0.0.0.0
       FLUXER_APP_PROXY_PORT: "8080"
-      # Talk to `api` directly instead of routing back out through a Caddy
-      # instance that no longer exists.
-      DISCOVERY_UPSTREAM_URL: http://api:8080/.well-known/fluxer
+      DISCOVERY_UPSTREAM_URL: http://caddy:8088/api/.well-known/fluxer
       PUBLIC_BOOTSTRAP_API_ENDPOINT: /api
       PUBLIC_BOOTSTRAP_API_PUBLIC_ENDPOINT: ${FLUXER_PUBLIC_SCHEME:-https}://${FLUXER_DOMAIN}/api
     ports:
       - "${FLUXER_HOST_IP:-10.42.1.114}:8086:8080"
     depends_on:
       api: {condition: service_healthy}
+      caddy: {condition: service_started}
 
   snowflakes:
     <<: *fluxer-service
